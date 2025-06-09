@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""
+Auto-setup OT Process Map in ClickUp via API v2
+Author: [Tu nombre]
+Repo: https://github.com/tu-usuario/clickup-ot-setup
+License: MIT
+
+Crea la estructura completa de una OT para motores/repuestos:
+- Space: 'Operaciones – OT Motores'
+- Folder: 'Work Orders 2025'
+- Lists (P0...P12): una por proceso del flujo
+- Custom Statuses: según el flujo OT (Draft, Sourcing, etc)
+- Custom Fields por List (RUT, Producto, FOB, DAP, Lead-time, Proveedor, etc)
+
+Requisitos:
+ 1. Python 3.8+
+ 2. pip install requests
+ 3. CLICKUP_API_TOKEN en variable de entorno (pk_xxx)
+ 4. Tu Team ID (Workspace ID numérico de ClickUp)
+
+Ejecución:
+    python setup_clickup_ot.py --team 12345678
+"""
+
+import os
+import sys
+import json
+import time
+import argparse
+import requests
+
+# ========== CONFIGURACIÓN ==========
+
+# Puedes modificar aquí los nombres de estados y listas
+STATUS_LIST = [
+    {"status": "draft",        "type": "open",   "order": 0},
+    {"status": "briefing",     "type": "open",   "order": 1},
+    {"status": "sourcing",     "type": "open",   "order": 2},
+    {"status": "proposal",     "type": "open",   "order": 3},
+    {"status": "quote_sent",   "type": "open",   "order": 4},
+    {"status": "awaiting",     "type": "open",   "order": 5},
+    {"status": "accepted",     "type": "open",   "order": 6},
+    {"status": "purchase",     "type": "in_progress", "order": 7},
+    {"status": "logistics",    "type": "in_progress", "order": 8},
+    {"status": "delivery",     "type": "in_progress", "order": 9},
+    {"status": "closed",       "type": "closed", "order": 10},
+]
+
+LISTS = [
+    {"name": "0 Maestro de Datos"},
+    {"name": "1 Solicitud"},
+    {"name": "2 Pre-cotización"},
+    {"name": "3 Investigación & Sourcing"},
+    {"name": "4 Evaluación de Propuestas"},
+    {"name": "5 Generación de Cotización Interna"},
+    {"name": "6 Envío de Cotización"},
+    {"name": "7 Seguimiento"},
+    {"name": "8 Estado de Cotización"},
+    {"name": "9 Orden de Compra y Abastecimiento"},
+    {"name": "10 Logística de Importación"},
+    {"name": "11 Entrega e Instalación"},
+    {"name": "12 Cierre y Post-venta"},
+]
+
+# Campos personalizados sugeridos (puedes expandirlos)
+CUSTOM_FIELDS = [
+    {"name": "RUT Cliente", "type": 1},
+    {"name": "Subcontacto", "type": 1},
+    {"name": "Producto", "type": 1},
+    {"name": "Marca", "type": 1},
+    {"name": "Modelo", "type": 1},
+    {"name": "FOB (USD)", "type": 8},
+    {"name": "DAP (USD)", "type": 8},
+    {"name": "Lead-time (días)", "type": 4},
+    {"name": "Proveedor", "type": 1},
+    {"name": "Status", "type": 1}
+]
+
+API_URL = "https://api.clickup.com/api/v2"
+
+# ========== FUNCIONES DE API ==========
+
+def api_headers():
+    return {
+        "Authorization": os.environ.get("CLICKUP_API_TOKEN"),
+        "Content-Type": "application/json"
+    }
+
+def create_space(team_id, name):
+    url = f"{API_URL}/team/{team_id}/space"
+    payload = {
+        "name": name,
+        "multiple_assignees": True,
+        "features": {
+            "custom_fields": True,
+            "time_tracking": True,
+            "tags": True
+        },
+        "statuses": [
+            { "status": st["status"], "orderindex": st["order"], "type": st["type"], "color": "#44D7B6" }
+            for st in STATUS_LIST
+        ],
+        "color": "#0867D1"
+    }
+    r = requests.post(url, headers=api_headers(), json=payload)
+    if r.status_code != 200:
+        print(f"ERROR creando Space: {r.text}")
+        sys.exit(1)
+    return r.json()["id"]
+
+def create_folder(space_id, name):
+    url = f"{API_URL}/space/{space_id}/folder"
+    r = requests.post(url, headers=api_headers(), json={"name": name})
+    if r.status_code != 200:
+        print(f"ERROR creando Folder: {r.text}")
+        sys.exit(1)
+    return r.json()["id"]
+
+def create_list(folder_id, name):
+    url = f"{API_URL}/folder/{folder_id}/list"
+    r = requests.post(url, headers=api_headers(), json={"name": name})
+    if r.status_code != 200:
+        print(f"ERROR creando List {name}: {r.text}")
+        sys.exit(1)
+    return r.json()["id"]
+
+def create_custom_fields(list_id):
+    for cf in CUSTOM_FIELDS:
+        url = f"{API_URL}/list/{list_id}/field"
+        payload = {"name": cf["name"], "type": cf["type"]}
+        r = requests.post(url, headers=api_headers(), json=payload)
+        if r.status_code not in (200, 201):
+            print(f"ERROR creando campo '{cf['name']}' en List {list_id}: {r.text}")
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--team", required=True, help="Workspace/Team ID de ClickUp (número)")
+    parser.add_argument("--folder", default="Work Orders 2025", help="Nombre del Folder principal")
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    token = os.environ.get("CLICKUP_API_TOKEN")
+    if not token:
+        print("Debes definir la variable de entorno CLICKUP_API_TOKEN con tu API Token (pk_xxx).")
+        sys.exit(1)
+
+    print("Creando Space…")
+    space_id = create_space(args.team, "Operaciones – OT Motores")
+    print(f"✓ Space creado (ID: {space_id})")
+
+    print("Creando Folder…")
+    folder_id = create_folder(space_id, args.folder)
+    print(f"✓ Folder creado (ID: {folder_id})")
+
+    for li in LISTS:
+        print(f"Creando List: {li['name']}")
+        list_id = create_list(folder_id, li["name"])
+        print(f"  - Añadiendo campos personalizados…")
+        create_custom_fields(list_id)
+        time.sleep(1)  # Para no saturar API
+
+    print("\n✓ Estructura OT creada correctamente en ClickUp.")
+
+if __name__ == "__main__":
+    main()
